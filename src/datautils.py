@@ -41,7 +41,7 @@ def get_tiny_pajama(nsamples, seqlen, tokenizer, eval_mode=False, cache_dir='cac
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
     
-    cache_file = os.path.join(cache_dir, 'traindata.pt')
+    cache_file = os.path.join(cache_dir, str(nsamples)+'-traindata.pt')
 
     # 检查是否已经缓存了数据
     if os.path.isfile(cache_file):

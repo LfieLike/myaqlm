@@ -89,7 +89,6 @@ class QuantizedWeight(nn.Module):
         self.straight_through_gradient = straight_through_gradient
         self.scale_nbits = scale_nbits
  #       
-        print(num_codebooks,in_group_size)
         clusters_merge,nearest_indices_merge,scales \
             = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
@@ -112,8 +111,6 @@ class QuantizedWeight(nn.Module):
         # print(count.min(),count.max)
         codebook_offsets = torch.arange(0,(self.rows*self.columns)//self.centroid_len).to(self.codebooks.device)
         reconstruct_weight = F.embedding_bag(codes.flatten(),self.codebooks.flatten(0,1),codebook_offsets,mode="sum")
-        print(reconstruct_weight.shape)
-        print(self.scales.shape)
         cnt = (reconstruct_weight.view(-1,self.bolck_size)*self.scales)
         return cnt.view((self.rows, self.columns))
     
@@ -137,17 +134,19 @@ class QuantizedWeight(nn.Module):
     def extra_repr(self) -> str:
         return f"{self.out_features=}, {self.in_features=}, bits_per_parameter={self.estimate_nbits_per_parameter()}"
 
-    def update_index(self,weight):
+    def update_index(self,weight,scaler_row):
+        shape = weight.shape[0]
+        print(self.bolck_size)
         reshspe_weight = weight
         reshspe_weight = reshspe_weight.view(-1,self.bolck_size)
         detach_scales = self.scales.detach()
         normalized_tensor = (reshspe_weight / detach_scales)
-        S = self.scaler_row.unsqueeze(0)\
-            .expand(self.layer.weight.data.shape[0], -1)\
+        S = scaler_row.unsqueeze(0)\
+            .expand(self.rows, -1)\
                 .contiguous()\
                     .view(-1,self.bolck_size)
-        weight_list = normalized_tensor.split(normalized_tensor.shape[0]//self.codebook_num,dim = 0)
-        S_list = S.split(normalized_tensor.shape[0]//self.codebook_num,dim = 0)
+        weight_list = normalized_tensor.split(normalized_tensor.shape[0]//self.num_codebooks,dim = 0)
+        S_list = S.split(normalized_tensor.shape[0]//self.num_codebooks,dim = 0)
         nearest_indices_list = []
         index = 0
         for weight,s in zip(weight_list,S_list):
@@ -181,7 +180,8 @@ def get_nearest_indices(
     chunks_s = torch.chunk(s1, 5, dim=0)
     b1 = centroids.unsqueeze(0)
     for ac,sc in zip(chunks_a,chunks_s):
-        dist = ((ac-b1)**2)*sc.sum(-1)
+        dist = ((ac-b1)**2)
+        dist = (dist*sc).sum(-1)
         assignments_list.append(dist.argmin(-1))
     
     assignments = torch.cat(assignments_list,dim=0)
