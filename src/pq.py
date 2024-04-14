@@ -65,9 +65,11 @@ class QuantizedWeight(nn.Module):
         codebook_value_num_groups: int = 1,
         scale_nbits: int = 0,
         straight_through_gradient: Optional[bool] = None,
+        rank = 32,
         **init_kwargs,
     ):
         super().__init__()
+        device = reference_weight.device
         self.out_features, self.in_features = reference_weight.shape
         assert self.in_features % in_group_size == 0
         assert self.out_features % out_group_size == 0
@@ -84,11 +86,14 @@ class QuantizedWeight(nn.Module):
         self.codebook_value_clusters = None
         self.bolck_size = reference_weight.shape[0]
         self.scales = self.scales_clusters = self.scales_indices = None
+        self.rank = rank
         if straight_through_gradient is None and scale_nbits > 0:
             straight_through_gradient = scale_nbits >= 6
         self.straight_through_gradient = straight_through_gradient
         self.scale_nbits = scale_nbits
- #       
+ #      
+        self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=True)
+        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True) 
         clusters_merge,nearest_indices_merge,scales \
             = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
@@ -99,7 +104,13 @@ class QuantizedWeight(nn.Module):
         """Get quantization codebooks or reconstruct them from second level quantization (see codebook_values_nbits)"""
         return self.codebooks
         raise NotImplementedError(f"{self.codebook_value_nbits}-bit codebook values are not supported")
-
+    def updateLR(self,weight):
+        weight = weight - self.differentiable_dequantize()
+        with torch.no_grad():
+            output = low_rank_decomposition(weight, reduced_rank=self.rank)
+            L, R, reduced_rank = output['L'], output['R'], output['reduced_rank']
+            self.L.data=L
+            self.R.data=R
     def get_scales(self) -> torch.Tensor:
         return self.scales  # scales are not quantized or the quantization is lossless
     def differentiable_dequantize(self):
@@ -123,7 +134,8 @@ class QuantizedWeight(nn.Module):
             Formally, the indices must be in range [ 0 , self.out_features // self.out_group_size )
 
         """
-        weight = self.differentiable_dequantize()
+        weight = self.differentiable_dequantize()+torch.mm(self.L, self.R)
+        # print(weight.dtype)
         return weight
 
 
@@ -135,6 +147,7 @@ class QuantizedWeight(nn.Module):
         return f"{self.out_features=}, {self.in_features=}, bits_per_parameter={self.estimate_nbits_per_parameter()}"
 
     def update_index(self,weight,scaler_row):
+        weight = weight - torch.mm(self.L,self.R)
         shape = weight.shape[0]
         print(self.bolck_size)
         reshspe_weight = weight
@@ -265,3 +278,30 @@ def init_aq_kmeans(
     codebooks = torch.cat(codebooks, dim=0)
     codes = torch.cat(codes, dim=-1)
     return codes, codebooks
+def low_rank_decomposition(weight, reduced_rank=32):
+    """
+    :param          weight: The matrix to decompose, of shape (H, W)
+    :param    reduced_rank: the final rank
+    :return:
+    """
+
+    """parameter_ratio = rank * (H + W) / (H * W)"""
+    """rank_ratio = """
+    matrix_dimension = len(weight.size())
+    assert matrix_dimension == 2, "Only Support 2D matrix"
+    H, W = weight.size()
+
+    # Use SVD to decompose a matrix, default full_matrices is False to save parameters
+
+    U, S, Vh = torch.linalg.svd(weight, full_matrices=False)
+    rank = torch.count_nonzero(S)
+    is_full_rank = rank == min(H, W)
+
+    L = U @ (torch.sqrt(torch.diag(S)[:, 0:reduced_rank]))
+    R = torch.sqrt(torch.diag(S)[0:reduced_rank, :]) @ Vh
+
+    # print(f"W: ({H},{W}) | Rank: {rank} | U:{U.shape} | S:{S.shape} | Vh:{Vh.shape}")
+    # print(f"Reduced Rank: {reduced_rank} | Num Parameters: {(H + W) * reduced_rank}")
+    print(f"L: {L.shape} | R: {R.shape}")
+
+    return {"L": L, "R": R, "U": U, "S": S, "Vh": Vh, 'reduced_rank': reduced_rank}  
