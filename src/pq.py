@@ -65,7 +65,7 @@ class QuantizedWeight(nn.Module):
         codebook_value_num_groups: int = 1,
         scale_nbits: int = 0,
         straight_through_gradient: Optional[bool] = None,
-        rank = 64,
+        rank = 32,
         **init_kwargs,
     ):
         super().__init__()
@@ -92,8 +92,8 @@ class QuantizedWeight(nn.Module):
         self.straight_through_gradient = straight_through_gradient
         self.scale_nbits = scale_nbits
  #      
-        self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=True)
-        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True) 
+        self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=False)
+        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=False) 
         clusters_merge,nearest_indices_merge,scales \
             = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
@@ -138,7 +138,8 @@ class QuantizedWeight(nn.Module):
         # print(weight.dtype)
         return weight
 
-
+    def soft_forward(self,weight,scaler_row):
+        return
     def estimate_nbits_per_parameter(self) -> float:
         """Calculate the effective number of bits per original matrix parameters"""
         return 0
@@ -204,6 +205,39 @@ def get_nearest_indices(
     # print(assignments.shape)
     return assignments
 
+def soft_dequant(
+    S: torch.Tensor, #重要性
+    W,
+    shape, # 权重的原始形状
+    centroids,
+    devices: Optional[List[torch.device]] = None,
+):
+    if S is None:
+        S = torch.zeros(shape[0]).to(W.device)
+        S[0] = 1
+        # S[0] = 1
+    # if devices is None:
+    #     devices = [data.device]
+    # W  N*D
+    # centroids n_centroids*D
+    assignments_list = []
+    a1 = W.view(-1,centroids.shape[-1]).unsqueeze(1)
+    # S为每一行的重要性权重，将其扩展成矩阵形式，方便计算
+    s1 = S.view(-1,centroids.shape[-1]).unsqueeze(1)
+    chunks_a = torch.chunk(a1, 2, dim=0)
+    chunks_s = torch.chunk(s1, 2, dim=0)
+    b1 = centroids.unsqueeze(0)
+    for ac,sc in zip(chunks_a,chunks_s):
+        dist = ((ac-b1)**2)
+        dist = (dist*sc).sum(-1)
+        assignments_list.append(dist.argmin(-1))
+    
+    assignments = torch.cat(assignments_list,dim=0)
+    # dist =((a1-b1)**2*s1).sum(-1)
+    # assignmentss = dist.argmin(-1)
+    # print(assignments - assignmentss)
+    # print(assignments.shape)
+    return assignments
 
 
 
