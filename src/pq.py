@@ -65,7 +65,7 @@ class QuantizedWeight(nn.Module):
         codebook_value_num_groups: int = 1,
         scale_nbits: int = 0,
         straight_through_gradient: Optional[bool] = None,
-        rank = 32,
+        rank = 64,
         **init_kwargs,
     ):
         super().__init__()
@@ -189,8 +189,8 @@ def get_nearest_indices(
     a1 = W.view(-1,centroids.shape[-1]).unsqueeze(1)
     # S为每一行的重要性权重，将其扩展成矩阵形式，方便计算
     s1 = S.view(-1,centroids.shape[-1]).unsqueeze(1)
-    chunks_a = torch.chunk(a1, 5, dim=0)
-    chunks_s = torch.chunk(s1, 5, dim=0)
+    chunks_a = torch.chunk(a1, 2, dim=0)
+    chunks_s = torch.chunk(s1, 2, dim=0)
     b1 = centroids.unsqueeze(0)
     for ac,sc in zip(chunks_a,chunks_s):
         dist = ((ac-b1)**2)
