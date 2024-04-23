@@ -126,7 +126,7 @@ class QuantizedWeight(nn.Module):
             straight_through_gradient = scale_nbits >= 6
         self.straight_through_gradient = straight_through_gradient
         self.scale_nbits = scale_nbits
- #      
+        self.s = torch.zeros((self.columns), device=device).view(1,-1)
         self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=True)
         self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True)
 
@@ -135,8 +135,8 @@ class QuantizedWeight(nn.Module):
         #     = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         clusters_merge,nearest_indices_merge,scales \
             = quantize(A,codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
-        output = low_rank_decomposition(B, reduced_rank=self.rank)
-        self.L.data, self.R.data = output['L'], output['R']
+        # output = low_rank_decomposition(B, reduced_rank=self.rank)
+        # self.L.data, self.R.data = output['L'], output['R']
 
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
         self.scales = nn.Parameter(scales,requires_grad=True)
@@ -146,11 +146,14 @@ class QuantizedWeight(nn.Module):
         """Get quantization codebooks or reconstruct them from second level quantization (see codebook_values_nbits)"""
         return self.codebooks
         raise NotImplementedError(f"{self.codebook_value_nbits}-bit codebook values are not supported")
+    
+    def get_s(self,scaler_row):
+        self.s=scaler_row.view(1,-1)**0.5
 
     def updateLR(self,weight):
         weight = weight - self.differentiable_dequantize()
         with torch.no_grad():
-            output = low_rank_decomposition(weight, reduced_rank=self.rank)
+            output = low_rank_decomposition(weight*self.s, reduced_rank=self.rank)
             L, R, reduced_rank = output['L'], output['R'], output['reduced_rank']
             self.L.data=L
             self.R.data=R
@@ -168,6 +171,7 @@ class QuantizedWeight(nn.Module):
         cnt = (reconstruct_weight.view(-1,self.bolck_size)*self.scales)
         return cnt.view((self.rows, self.columns))
     
+
     def forward(self, selection: Union[slice, ellipsis, torch.Tensor] = ...):
         """
         Differentably reconstruct the weight (or parts thereof) from compressed components
@@ -177,7 +181,7 @@ class QuantizedWeight(nn.Module):
             Formally, the indices must be in range [ 0 , self.out_features // self.out_group_size )
 
         """
-        weight = self.differentiable_dequantize()+torch.mm(self.L, self.R)
+        weight = self.differentiable_dequantize()+torch.mm(self.L, self.R)/self.s
         # print(weight.dtype)
         return weight
 
