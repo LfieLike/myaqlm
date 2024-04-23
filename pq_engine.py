@@ -99,6 +99,7 @@ class PQEngine(nn.Module):
                     with torch.no_grad():
                         self.quantized_weight.update_index(self.layer.weight.detach(),self.scaler_row)
                         self.quantized_weight.updateLR(self.layer.weight.detach())
+        
         return self.quantized_weight
 
     def _compute_mse(self, selection: Union[slice, ellipsis] = ...) -> torch.Tensor:

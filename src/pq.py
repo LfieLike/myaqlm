@@ -10,8 +10,9 @@ from tqdm.auto import trange
 
 from src.kmeans import find_nearest_cluster, fit_faiss_kmeans, fit_kmeans, fit_kmeans_1d
 from src.utils import ellipsis, maybe_script
-
-
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import norm
 class QuantizedLinear(nn.Module):
     def __init__(self, quantized_weight, bias: Optional[nn.Parameter]):
         super().__init__()
@@ -29,6 +30,40 @@ class QuantizedLinear(nn.Module):
                 self._forward, input, use_reentrant=False, preserve_rng_state=False, determinism_check="none"
             )
         return self._forward(input)
+def fit_gaussian_to_tensor(matrix, save_path):
+    # 将矩阵展开为一个一维张量，并转换为 numpy 数组
+    tensor = matrix.view(-1).to(dtype=torch.float32).data.cpu().numpy()
+    mean = tensor.mean().item()
+    std = tensor.std().item()
+
+    # 创建一个范围适当的值作为 x 坐标
+    x = np.linspace(mean - 3*std, mean + 3*std, 1000)
+
+    # 使用均值和标准差创建高斯分布
+    gaussian_distribution = norm.pdf(x, mean, std)
+
+    # 绘制高斯分布的概率密度函数以及张量的直方图
+    plt.figure(figsize=(8, 6))
+    plt.plot(x, gaussian_distribution, color='blue', label='Gaussian Distribution')
+    plt.hist(tensor, bins=1024, density=True, color='orange', alpha=0.6, label='Tensor Histogram')
+    plt.title('Gaussian Distribution Fit to Tensor Values')
+    plt.xlabel('Values')
+    plt.ylabel('Probability Density')
+    plt.legend()
+    plt.savefig(save_path)
+    plt.close()
+
+def decompose_tensor(tensor):
+    mean = torch.mean(tensor)
+    std = torch.std(tensor)
+    A = tensor.clone()
+    # threshold = mean + 2*std
+    A[A>mean+1.2*std]=0
+    A[A<mean-1.2*std]=0
+    B = tensor - A
+    sparsity = torch.sum(B != 0).item() / B.numel()
+    print("B sparsity: ", sparsity)
+    return A, B
 
 def quantize(org_weight,codebook_num = 2,centroids_num = 256,block_size = 64,centroid_len = 8):
     # 计算每一行的二范数
@@ -65,7 +100,7 @@ class QuantizedWeight(nn.Module):
         codebook_value_num_groups: int = 1,
         scale_nbits: int = 0,
         straight_through_gradient: Optional[bool] = None,
-        rank = 64,
+        rank = 32,
         **init_kwargs,
     ):
         super().__init__()
@@ -93,17 +128,25 @@ class QuantizedWeight(nn.Module):
         self.scale_nbits = scale_nbits
  #      
         self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=True)
-        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True) 
+        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True)
+
+        A, B = decompose_tensor(reference_weight.float())
+        # clusters_merge,nearest_indices_merge,scales \
+        #     = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         clusters_merge,nearest_indices_merge,scales \
-            = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
+            = quantize(A,codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
+        output = low_rank_decomposition(B, reduced_rank=self.rank)
+        self.L.data, self.R.data = output['L'], output['R']
+
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
         self.scales = nn.Parameter(scales,requires_grad=True)
         self.codes = nn.Parameter(nearest_indices_merge,requires_grad=False)
-        
+
     def get_codebooks(self) -> torch.Tensor:
         """Get quantization codebooks or reconstruct them from second level quantization (see codebook_values_nbits)"""
         return self.codebooks
         raise NotImplementedError(f"{self.codebook_value_nbits}-bit codebook values are not supported")
+
     def updateLR(self,weight):
         weight = weight - self.differentiable_dequantize()
         with torch.no_grad():
