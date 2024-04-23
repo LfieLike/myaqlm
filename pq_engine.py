@@ -62,7 +62,7 @@ class PQEngine(nn.Module):
             devices=args.devices,
             verbose=True,
         )
-
+        self.quantized_weight.get_s(self.scaler_row)
         differentiable_parameters = nn.ParameterDict(
             {name: param for name, param in self.quantized_weight.named_parameters() if param.requires_grad}
         )
@@ -74,6 +74,7 @@ class PQEngine(nn.Module):
             replicas[0] = self
 
         previous_best_loss = float("inf")  # for early stopping
+        self.quantized_weight.updateLR(self.layer.weight.detach())
         for epoch in range(args.max_epochs):
             # train codebooks and scales
             for step in range(args.steps_per_epoch):
