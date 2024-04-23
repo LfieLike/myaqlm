@@ -95,8 +95,11 @@ class PQEngine(nn.Module):
                 if verbose and (epoch * args.steps_per_epoch + step) % args.print_frequency == 0:
                     print(f"epoch={epoch}\tstep={step}\tloss={loss.item():.10f}\t")
             # search for better codes (cluster indices)
-            with torch.no_grad():
-                self.quantized_weight.update_index(self.layer.weight.detach(),self.scaler_row)
+                if step%20 == 0:
+                    with torch.no_grad():
+                        self.quantized_weight.update_index(self.layer.weight.detach(),self.scaler_row)
+                        self.quantized_weight.updateLR(self.layer.weight.detach())
+        
         return self.quantized_weight
 
     def _compute_mse(self, selection: Union[slice, ellipsis] = ...) -> torch.Tensor:
@@ -122,7 +125,7 @@ class PQEngine(nn.Module):
 
             reference_weight = self.layer.weight.detach()[out_channel_selection].to(quantized_weight.dtype)
         delta_weight = (quantized_weight - reference_weight).to(self.XTX.dtype)
-        return (delta_weight @ self.XTX).flatten() @ delta_weight.flatten() / self.quantized_weight.out_features
+        return (delta_weight @ self.XTX).flatten() @ delta_weight.flatten() / len(delta_weight) 
 
     def _replace_and_compute_mse(self, params_to_replace: nn.ParameterDict, selection: slice) -> torch.Tensor:
         """Utility for parallelism: replace the specified parameters of self.quantized_weight, then compute MSE"""

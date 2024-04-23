@@ -10,8 +10,9 @@ from tqdm.auto import trange
 
 from src.kmeans import find_nearest_cluster, fit_faiss_kmeans, fit_kmeans, fit_kmeans_1d
 from src.utils import ellipsis, maybe_script
-
-
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import norm
 class QuantizedLinear(nn.Module):
     def __init__(self, quantized_weight, bias: Optional[nn.Parameter]):
         super().__init__()
@@ -29,6 +30,40 @@ class QuantizedLinear(nn.Module):
                 self._forward, input, use_reentrant=False, preserve_rng_state=False, determinism_check="none"
             )
         return self._forward(input)
+def fit_gaussian_to_tensor(matrix, save_path):
+    # 将矩阵展开为一个一维张量，并转换为 numpy 数组
+    tensor = matrix.view(-1).to(dtype=torch.float32).data.cpu().numpy()
+    mean = tensor.mean().item()
+    std = tensor.std().item()
+
+    # 创建一个范围适当的值作为 x 坐标
+    x = np.linspace(mean - 3*std, mean + 3*std, 1000)
+
+    # 使用均值和标准差创建高斯分布
+    gaussian_distribution = norm.pdf(x, mean, std)
+
+    # 绘制高斯分布的概率密度函数以及张量的直方图
+    plt.figure(figsize=(8, 6))
+    plt.plot(x, gaussian_distribution, color='blue', label='Gaussian Distribution')
+    plt.hist(tensor, bins=1024, density=True, color='orange', alpha=0.6, label='Tensor Histogram')
+    plt.title('Gaussian Distribution Fit to Tensor Values')
+    plt.xlabel('Values')
+    plt.ylabel('Probability Density')
+    plt.legend()
+    plt.savefig(save_path)
+    plt.close()
+
+def decompose_tensor(tensor):
+    mean = torch.mean(tensor)
+    std = torch.std(tensor)
+    A = tensor.clone()
+    # threshold = mean + 2*std
+    A[A>mean+1.2*std]=0
+    A[A<mean-1.2*std]=0
+    B = tensor - A
+    sparsity = torch.sum(B != 0).item() / B.numel()
+    print("B sparsity: ", sparsity)
+    return A, B
 
 def quantize(org_weight,codebook_num = 2,centroids_num = 256,block_size = 64,centroid_len = 8):
     # 计算每一行的二范数
@@ -65,9 +100,11 @@ class QuantizedWeight(nn.Module):
         codebook_value_num_groups: int = 1,
         scale_nbits: int = 0,
         straight_through_gradient: Optional[bool] = None,
+        rank = 32,
         **init_kwargs,
     ):
         super().__init__()
+        device = reference_weight.device
         self.out_features, self.in_features = reference_weight.shape
         assert self.in_features % in_group_size == 0
         assert self.out_features % out_group_size == 0
@@ -84,22 +121,39 @@ class QuantizedWeight(nn.Module):
         self.codebook_value_clusters = None
         self.bolck_size = reference_weight.shape[0]
         self.scales = self.scales_clusters = self.scales_indices = None
+        self.rank = rank
         if straight_through_gradient is None and scale_nbits > 0:
             straight_through_gradient = scale_nbits >= 6
         self.straight_through_gradient = straight_through_gradient
         self.scale_nbits = scale_nbits
- #       
+ #      
+        self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=True)
+        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True)
+
+        A, B = decompose_tensor(reference_weight.float())
+        # clusters_merge,nearest_indices_merge,scales \
+        #     = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         clusters_merge,nearest_indices_merge,scales \
-            = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
+            = quantize(A,codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
+        output = low_rank_decomposition(B, reduced_rank=self.rank)
+        self.L.data, self.R.data = output['L'], output['R']
+
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
         self.scales = nn.Parameter(scales,requires_grad=True)
         self.codes = nn.Parameter(nearest_indices_merge,requires_grad=False)
-        
+
     def get_codebooks(self) -> torch.Tensor:
         """Get quantization codebooks or reconstruct them from second level quantization (see codebook_values_nbits)"""
         return self.codebooks
         raise NotImplementedError(f"{self.codebook_value_nbits}-bit codebook values are not supported")
 
+    def updateLR(self,weight):
+        weight = weight - self.differentiable_dequantize()
+        with torch.no_grad():
+            output = low_rank_decomposition(weight, reduced_rank=self.rank)
+            L, R, reduced_rank = output['L'], output['R'], output['reduced_rank']
+            self.L.data=L
+            self.R.data=R
     def get_scales(self) -> torch.Tensor:
         return self.scales  # scales are not quantized or the quantization is lossless
     def differentiable_dequantize(self):
@@ -123,7 +177,8 @@ class QuantizedWeight(nn.Module):
             Formally, the indices must be in range [ 0 , self.out_features // self.out_group_size )
 
         """
-        weight = self.differentiable_dequantize()
+        weight = self.differentiable_dequantize()+torch.mm(self.L, self.R)
+        # print(weight.dtype)
         return weight
 
 
@@ -135,6 +190,7 @@ class QuantizedWeight(nn.Module):
         return f"{self.out_features=}, {self.in_features=}, bits_per_parameter={self.estimate_nbits_per_parameter()}"
 
     def update_index(self,weight,scaler_row):
+        weight = weight - torch.mm(self.L,self.R)
         shape = weight.shape[0]
         print(self.bolck_size)
         reshspe_weight = weight
@@ -176,8 +232,8 @@ def get_nearest_indices(
     a1 = W.view(-1,centroids.shape[-1]).unsqueeze(1)
     # S为每一行的重要性权重，将其扩展成矩阵形式，方便计算
     s1 = S.view(-1,centroids.shape[-1]).unsqueeze(1)
-    chunks_a = torch.chunk(a1, 5, dim=0)
-    chunks_s = torch.chunk(s1, 5, dim=0)
+    chunks_a = torch.chunk(a1, 2, dim=0)
+    chunks_s = torch.chunk(s1, 2, dim=0)
     b1 = centroids.unsqueeze(0)
     for ac,sc in zip(chunks_a,chunks_s):
         dist = ((ac-b1)**2)
@@ -265,3 +321,30 @@ def init_aq_kmeans(
     codebooks = torch.cat(codebooks, dim=0)
     codes = torch.cat(codes, dim=-1)
     return codes, codebooks
+def low_rank_decomposition(weight, reduced_rank=32):
+    """
+    :param          weight: The matrix to decompose, of shape (H, W)
+    :param    reduced_rank: the final rank
+    :return:
+    """
+
+    """parameter_ratio = rank * (H + W) / (H * W)"""
+    """rank_ratio = """
+    matrix_dimension = len(weight.size())
+    assert matrix_dimension == 2, "Only Support 2D matrix"
+    H, W = weight.size()
+
+    # Use SVD to decompose a matrix, default full_matrices is False to save parameters
+
+    U, S, Vh = torch.linalg.svd(weight, full_matrices=False)
+    rank = torch.count_nonzero(S)
+    is_full_rank = rank == min(H, W)
+
+    L = U @ (torch.sqrt(torch.diag(S)[:, 0:reduced_rank]))
+    R = torch.sqrt(torch.diag(S)[0:reduced_rank, :]) @ Vh
+
+    # print(f"W: ({H},{W}) | Rank: {rank} | U:{U.shape} | S:{S.shape} | Vh:{Vh.shape}")
+    # print(f"Reduced Rank: {reduced_rank} | Num Parameters: {(H + W) * reduced_rank}")
+    print(f"L: {L.shape} | R: {R.shape}")
+
+    return {"L": L, "R": R, "U": U, "S": S, "Vh": Vh, 'reduced_rank': reduced_rank}  
