@@ -1,4 +1,6 @@
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import time
 from argparse import Namespace
 from itertools import chain
@@ -251,7 +253,7 @@ def quantize_pq(model: PreTrainedModel, dataloader: Iterable, args: Namespace):
             with using_tf32(enabled=True):
                 layer = finetune_groupwise(layer=layer, inps=inps, outs=outs, args=args, **forward_args)
             layer = layer.to(dtype=layer_dtype_original)
-            print("FINISHED FINETUNING")
+            print("FINISHED FINETUNING")   
         if args.save:
             os.makedirs(args.save, exist_ok=True)
             layer_save_path = os.path.join(args.save, f"{layer_index}.pth")
@@ -544,7 +546,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_seqlen",
         type=int,
-        default=4096,
+        default=2048,
         help="Model seqlen and calibration data context length.",
     )
     parser.add_argument(
@@ -781,6 +783,7 @@ if __name__ == "__main__":
     print("\n============ Evaluating perplexity... ============")
     torch.cuda.reset_peak_memory_stats()
     datasets = ["wikitext2", "c4"]
+    # datasets = ["wikitext2"]
     if args.new_eval:
         datasets = ["wikitext2", "c4-new"]
     for dataset in datasets:
