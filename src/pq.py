@@ -128,19 +128,29 @@ class QuantizedWeight(nn.Module):
         self.scale_nbits = scale_nbits
         self.s = torch.zeros((self.columns), device=device).view(1,-1)
         self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=True)
-        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True)
 
-        A, B = decompose_tensor(reference_weight.float())
-        # clusters_merge,nearest_indices_merge,scales \
-        #     = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
+        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True) 
+        A,B = self.decompose(reference_weight.float())
         clusters_merge,nearest_indices_merge,scales \
-            = quantize(A,codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
-        # output = low_rank_decomposition(B, reduced_rank=self.rank)
-        # self.L.data, self.R.data = output['L'], output['R']
-
+            = quantize(A.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
         self.scales = nn.Parameter(scales,requires_grad=True)
         self.codes = nn.Parameter(nearest_indices_merge,requires_grad=False)
+    def decompose(self,tensor):
+        # mean = torch.mean(tensor)
+        # std = torch.std(tensor)
+        # A = tensor.clone()
+        # A[A>mean+1*std]=0
+        # A[A<mean-1*std]=0
+        # B=tensor -A
+        # sparsity=torch.sum(B!=0).item()/B.numel()
+        # print("B sparsity:",sparsity)
+        orgtype = tensor.dtype
+        A = tensor.clone().float()
+        A = torch.floor(A*1000)/1000
+        A = A.to(orgtype)
+        print((A-tensor).abs().sum())
+        return A,None
 
     def get_codebooks(self) -> torch.Tensor:
         """Get quantization codebooks or reconstruct them from second level quantization (see codebook_values_nbits)"""

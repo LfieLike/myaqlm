@@ -62,7 +62,7 @@ class PQEngine(nn.Module):
             devices=args.devices,
             verbose=True,
         )
-        self.quantized_weight.get_s(self.scaler_row)
+
         differentiable_parameters = nn.ParameterDict(
             {name: param for name, param in self.quantized_weight.named_parameters() if param.requires_grad}
         )
@@ -74,7 +74,6 @@ class PQEngine(nn.Module):
             replicas[0] = self
 
         previous_best_loss = float("inf")  # for early stopping
-        self.quantized_weight.updateLR(self.layer.weight.detach())
         for epoch in range(args.max_epochs):
             # train codebooks and scales
             for step in range(args.steps_per_epoch):
@@ -96,11 +95,10 @@ class PQEngine(nn.Module):
                 if verbose and (epoch * args.steps_per_epoch + step) % args.print_frequency == 0:
                     print(f"epoch={epoch}\tstep={step}\tloss={loss.item():.10f}\t")
             # search for better codes (cluster indices)
-                if step%10 == 0:
+                if step%20 == 0:
                     with torch.no_grad():
                         self.quantized_weight.update_index(self.layer.weight.detach(),self.scaler_row)
                         self.quantized_weight.updateLR(self.layer.weight.detach())
-        
         return self.quantized_weight
 
     def _compute_mse(self, selection: Union[slice, ellipsis] = ...) -> torch.Tensor:
