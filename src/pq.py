@@ -92,14 +92,29 @@ class QuantizedWeight(nn.Module):
         self.straight_through_gradient = straight_through_gradient
         self.scale_nbits = scale_nbits
  #      
-        self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=False)
-        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=False) 
+        self.L = nn.Parameter(torch.zeros(self.rows,rank).to(device),requires_grad=True)
+        self.R = nn.Parameter(torch.zeros(rank,self.columns).to(device),requires_grad=True) 
+        A,B = self.decompose(reference_weight.float())
         clusters_merge,nearest_indices_merge,scales \
-            = quantize(reference_weight.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
+            = quantize(A.float(),codebook_num=num_codebooks,block_size=self.bolck_size,centroid_len=in_group_size)
         self.codebooks = nn.Parameter(clusters_merge,requires_grad=True)
         self.scales = nn.Parameter(scales,requires_grad=True)
         self.codes = nn.Parameter(nearest_indices_merge,requires_grad=False)
-        
+    def decompose(self,tensor):
+        # mean = torch.mean(tensor)
+        # std = torch.std(tensor)
+        # A = tensor.clone()
+        # A[A>mean+1*std]=0
+        # A[A<mean-1*std]=0
+        # B=tensor -A
+        # sparsity=torch.sum(B!=0).item()/B.numel()
+        # print("B sparsity:",sparsity)
+        orgtype = tensor.dtype
+        A = tensor.clone().float()
+        A = torch.floor(A*1000)/1000
+        A = A.to(orgtype)
+        print((A-tensor).abs().sum())
+        return A,None
     def get_codebooks(self) -> torch.Tensor:
         """Get quantization codebooks or reconstruct them from second level quantization (see codebook_values_nbits)"""
         return self.codebooks
@@ -138,8 +153,7 @@ class QuantizedWeight(nn.Module):
         # print(weight.dtype)
         return weight
 
-    def soft_forward(self,weight,scaler_row):
-        return
+
     def estimate_nbits_per_parameter(self) -> float:
         """Calculate the effective number of bits per original matrix parameters"""
         return 0
@@ -205,39 +219,6 @@ def get_nearest_indices(
     # print(assignments.shape)
     return assignments
 
-def soft_dequant(
-    S: torch.Tensor, #重要性
-    W,
-    shape, # 权重的原始形状
-    centroids,
-    devices: Optional[List[torch.device]] = None,
-):
-    if S is None:
-        S = torch.zeros(shape[0]).to(W.device)
-        S[0] = 1
-        # S[0] = 1
-    # if devices is None:
-    #     devices = [data.device]
-    # W  N*D
-    # centroids n_centroids*D
-    assignments_list = []
-    a1 = W.view(-1,centroids.shape[-1]).unsqueeze(1)
-    # S为每一行的重要性权重，将其扩展成矩阵形式，方便计算
-    s1 = S.view(-1,centroids.shape[-1]).unsqueeze(1)
-    chunks_a = torch.chunk(a1, 2, dim=0)
-    chunks_s = torch.chunk(s1, 2, dim=0)
-    b1 = centroids.unsqueeze(0)
-    for ac,sc in zip(chunks_a,chunks_s):
-        dist = ((ac-b1)**2)
-        dist = (dist*sc).sum(-1)
-        assignments_list.append(dist.argmin(-1))
-    
-    assignments = torch.cat(assignments_list,dim=0)
-    # dist =((a1-b1)**2*s1).sum(-1)
-    # assignmentss = dist.argmin(-1)
-    # print(assignments - assignmentss)
-    # print(assignments.shape)
-    return assignments
 
 
 

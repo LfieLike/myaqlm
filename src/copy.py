@@ -95,7 +95,7 @@ class PQEngine(nn.Module):
                 if verbose and (epoch * args.steps_per_epoch + step) % args.print_frequency == 0:
                     print(f"epoch={epoch}\tstep={step}\tloss={loss.item():.10f}\t")
             # search for better codes (cluster indices)
-                if step%10 == 0:
+                if step%20 == 0:
                     with torch.no_grad():
                         self.quantized_weight.update_index(self.layer.weight.detach(),self.scaler_row)
                         self.quantized_weight.updateLR(self.layer.weight.detach())
